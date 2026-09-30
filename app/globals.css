@@ -140,6 +140,36 @@ button {
   backdrop-filter: blur(16px);
 }
 
+.sync-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(15, 107, 109, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 250, 242, 0.82);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sync-badge.saving {
+  color: #7d5a23;
+}
+
+.sync-badge.saved {
+  border-color: rgba(15, 107, 109, 0.32);
+  color: var(--green-dark);
+}
+
+.sync-badge.offline {
+  border-color: rgba(184, 138, 84, 0.32);
+  color: #8a5f29;
+}
+
 .brand-lockup {
   display: flex;
   align-items: center;

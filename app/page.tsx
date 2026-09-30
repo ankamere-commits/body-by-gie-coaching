@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 
 type Step = "welcome" | "onboarding" | "dashboard" | "reflection";
 type MissionKey = "strength" | "food" | "water" | "walk" | "encouragement";
@@ -134,6 +134,17 @@ type DailyCheckIn = {
   motivation: string;
 };
 
+type Reflection = {
+  worked: string;
+  hard: string;
+  adjust: string;
+  energy: string;
+  consistency: string;
+  nextFocus: string;
+};
+
+type DatabaseSyncStatus = "idle" | "saving" | "saved" | "offline";
+
 const APP_NAME = "BODY BY GIE";
 const APP_TAGLINE = "Stronger Body. Stronger Mind. Stronger You.";
 const lifestylePhotos = {
@@ -255,7 +266,7 @@ export default function Home() {
   const [selectedDay, setSelectedDay] = useState(1);
   const [completed, setCompleted] = useState<Record<string, boolean>>({});
   const [form, setForm] = useState<Onboarding>(defaultOnboarding);
-  const [reflection, setReflection] = useState({
+  const [reflection, setReflection] = useState<Reflection>({
     worked: "",
     hard: "",
     adjust: "",
@@ -269,6 +280,8 @@ export default function Home() {
     sleep: "Okay",
     motivation: "Medium",
   });
+  const [clientId, setClientId] = useState("");
+  const [syncStatus, setSyncStatus] = useState<DatabaseSyncStatus>("idle");
 
   const engine = useMemo(
     () => buildCoachingEngine(form, completed, reflection, dailyCheckIn),
@@ -278,6 +291,35 @@ export default function Home() {
   const insights = useMemo(() => createCoachingInsights(form), [form]);
   const currentDay = plan.find((day) => day.day === selectedDay) ?? plan[0];
   const consistencyScore = calculateConsistencyScore(completed, reflection);
+
+  useEffect(() => {
+    const storedId = window.localStorage.getItem("body-by-gie-client-id");
+    const nextId =
+      storedId ||
+      (window.crypto?.randomUUID?.() ?? `client-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    window.localStorage.setItem("body-by-gie-client-id", nextId);
+    setClientId(nextId);
+  }, []);
+
+  async function syncToDatabase(endpoint: "/api/profiles" | "/api/progress", payload: Record<string, unknown>) {
+    if (!clientId) return;
+
+    setSyncStatus("saving");
+
+    try {
+      const response = await fetch(endpoint, {
+        body: JSON.stringify({ clientId, ...payload }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const result = (await response.json()) as { saved?: boolean };
+
+      setSyncStatus(response.ok && result.saved ? "saved" : "offline");
+    } catch {
+      setSyncStatus("offline");
+    }
+  }
 
   function updateField<K extends keyof Onboarding>(field: K, value: Onboarding[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -298,24 +340,82 @@ export default function Home() {
     if (getFullOnboardingValidation(form)) return;
     setStep("dashboard");
     setSelectedDay(1);
+    void syncToDatabase("/api/profiles", {
+      insights,
+      onboarding: form,
+      planSummary: {
+        level: engine.level,
+        nextStep: engine.nextAchievableStep,
+        weeklyWorkouts: engine.weeklyWorkouts,
+      },
+    });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function toggleMission(day: number, mission: MissionKey) {
     const key = `${day}-${mission}`;
-    setCompleted((current) => ({
-      ...current,
-      [key]: !current[key],
-      [`${day}-missed-strength`]: mission === "strength" && !current[key] ? false : (current[`${day}-missed-strength`] ?? false),
-    }));
+    setCompleted((current) => {
+      const next = {
+        ...current,
+        [key]: !current[key],
+        [`${day}-missed-strength`]: mission === "strength" && !current[key] ? false : (current[`${day}-missed-strength`] ?? false),
+      };
+
+      void syncToDatabase("/api/progress", {
+        eventType: "mission_toggled",
+        payload: {
+          completed: next[key],
+          consistencyScore: calculateConsistencyScore(next, reflection),
+          day,
+          mission,
+        },
+      });
+
+      return next;
+    });
   }
 
   function markWorkoutMissed(day: number) {
-    setCompleted((current) => ({
-      ...current,
-      [`${day}-strength`]: false,
-      [`${day}-missed-strength`]: true,
-    }));
+    setCompleted((current) => {
+      const next = {
+        ...current,
+        [`${day}-strength`]: false,
+        [`${day}-missed-strength`]: true,
+      };
+
+      void syncToDatabase("/api/progress", {
+        eventType: "workout_missed",
+        payload: {
+          consistencyScore: calculateConsistencyScore(next, reflection),
+          day,
+          message: engine.missedWorkoutMessage,
+        },
+      });
+
+      return next;
+    });
+  }
+
+  function updateDailyCheckIn(nextCheckIn: DailyCheckIn) {
+    setDailyCheckIn(nextCheckIn);
+    void syncToDatabase("/api/progress", {
+      eventType: "daily_check_in",
+      payload: {
+        checkIn: nextCheckIn,
+        selectedDay,
+      },
+    });
+  }
+
+  function finishReflection() {
+    void syncToDatabase("/api/progress", {
+      eventType: "weekly_reflection",
+      payload: {
+        consistencyScore,
+        reflection,
+      },
+    });
+    setStep("dashboard");
   }
 
   return (
@@ -335,6 +435,7 @@ export default function Home() {
             <button className="ghost-button" type="button" onClick={() => setStep("dashboard")}>
               Dashboard
             </button>
+            <DatabaseSyncBadge status={syncStatus} />
           </header>
         )}
 
@@ -363,7 +464,7 @@ export default function Home() {
             onMarkWorkoutMissed={markWorkoutMissed}
             onSelectDay={setSelectedDay}
             onToggleMission={toggleMission}
-            setDailyCheckIn={setDailyCheckIn}
+            setDailyCheckIn={updateDailyCheckIn}
             plan={plan}
             selectedDay={selectedDay}
           />
@@ -375,7 +476,7 @@ export default function Home() {
             engine={engine}
             reflection={reflection}
             setReflection={setReflection}
-            onDone={() => setStep("dashboard")}
+            onDone={finishReflection}
           />
         )}
       </div>
@@ -405,6 +506,19 @@ function Welcome({ onSignIn, onStart }: { onSignIn: () => void; onStart: () => v
       </section>
     </section>
   );
+}
+
+function DatabaseSyncBadge({ status }: { status: DatabaseSyncStatus }) {
+  const label =
+    status === "saving"
+      ? "Saving"
+      : status === "saved"
+        ? "Saved"
+        : status === "offline"
+          ? "Local mode"
+          : "Ready";
+
+  return <span className={`sync-badge ${status}`}>{label}</span>;
 }
 
 function OnboardingForm({
@@ -739,7 +853,7 @@ function Dashboard({
   onToggleMission: (day: number, mission: MissionKey) => void;
   plan: PlanDay[];
   selectedDay: number;
-  setDailyCheckIn: React.Dispatch<React.SetStateAction<DailyCheckIn>>;
+  setDailyCheckIn: (nextCheckIn: DailyCheckIn) => void;
 }) {
   const coachName = getCoachName(form);
   const completedHabits = Object.values(completed).filter(Boolean).length;
@@ -1361,10 +1475,10 @@ function DailyReadinessCard({
 }: {
   dailyCheckIn: DailyCheckIn;
   engine: CoachingEngine;
-  setDailyCheckIn: React.Dispatch<React.SetStateAction<DailyCheckIn>>;
+  setDailyCheckIn: (nextCheckIn: DailyCheckIn) => void;
 }) {
   function update(field: keyof DailyCheckIn, value: string) {
-    setDailyCheckIn((current) => ({ ...current, [field]: value }));
+    setDailyCheckIn({ ...dailyCheckIn, [field]: value });
   }
 
   return (
